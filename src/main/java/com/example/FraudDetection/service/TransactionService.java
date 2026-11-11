@@ -1,3 +1,4 @@
+
 package com.example.FraudDetection.service;
 
 import com.example.FraudDetection.dto.FraudResult;
@@ -13,7 +14,8 @@ import com.example.FraudDetection.repository.UserRepository;
 
 import org.springframework.security.core.context.SecurityContextHolder;
 import org.springframework.stereotype.Service;
-import java.util.*;
+
+import java.util.List;
 
 @Service
 public class TransactionService {
@@ -21,30 +23,40 @@ public class TransactionService {
     private final TransactionRepository transactionRepository;
     private final UserRepository userRepository;
     private final FraudDetectionService fraudDetectionService;
+    private final KafkaProducerService kafkaProducerService;
 
-    public TransactionService(TransactionRepository transactionRepository,
+    public TransactionService(
+            TransactionRepository transactionRepository,
             UserRepository userRepository,
-            FraudDetectionService fraudDetectionService) {
+            FraudDetectionService fraudDetectionService,
+            KafkaProducerService kafkaProducerService) {
+
         this.transactionRepository = transactionRepository;
         this.userRepository = userRepository;
         this.fraudDetectionService = fraudDetectionService;
+        this.kafkaProducerService = kafkaProducerService;
     }
 
     public TransactionResponseDTO createTransaction(
             TransactionRequestDTO request) {
 
+        // Get authenticated username from JWT Security Context
         String username = SecurityContextHolder
                 .getContext()
                 .getAuthentication()
                 .getName();
 
+        // Find authenticated user
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new UserNotFoundException("User not found"));
+                .orElseThrow(() ->
+                        new UserNotFoundException("User not found"));
 
+        // Calculate fraud risk
         FraudResult result = fraudDetectionService.detectFraud(
                 request,
                 user.getId());
 
+        // Create transaction entity
         Transaction transaction = new Transaction();
 
         transaction.setAmount(request.getAmount());
@@ -58,14 +70,29 @@ public class TransactionService {
         transaction.setStatus(result.getStatus());
         transaction.setRiskScore(result.getRiskScore());
 
-        Transaction savedTransaction = transactionRepository.save(transaction);
+        // Save transaction in database
+        Transaction savedTransaction =
+                transactionRepository.save(transaction);
 
-        return toResponseDTO(savedTransaction);
+        // Convert saved transaction into response DTO
+        TransactionResponseDTO response =
+                toResponseDTO(savedTransaction);
+
+        // Publish event to Kafka after successful database save
+        String eventMessage =
+                "TRANSACTION_CREATED:" + savedTransaction.getId();
+
+        kafkaProducerService.sendMessage(eventMessage);
+
+        return response;
     }
 
     public List<TransactionResponseDTO> getAllTransactions() {
-        List<Transaction> transaction = transactionRepository.findAll();
-        return transaction.stream()
+
+        List<Transaction> transactions =
+                transactionRepository.findAll();
+
+        return transactions.stream()
                 .map(this::toResponseDTO)
                 .toList();
     }
@@ -74,8 +101,9 @@ public class TransactionService {
 
         Transaction transaction = transactionRepository
                 .findById(id)
-                .orElseThrow(() -> new TransactionNotFoundException(
-                        "Transaction with " + id + " not found"));
+                .orElseThrow(() ->
+                        new TransactionNotFoundException(
+                                "Transaction with " + id + " not found"));
 
         String username = SecurityContextHolder
                 .getContext()
@@ -87,7 +115,8 @@ public class TransactionService {
                 .getAuthentication()
                 .getAuthorities()
                 .stream()
-                .anyMatch(authority -> authority.getAuthority().equals("ROLE_ADMIN"));
+                .anyMatch(authority ->
+                        authority.getAuthority().equals("ROLE_ADMIN"));
 
         if (!isAdmin &&
                 !transaction.getUser().getUsername().equals(username)) {
@@ -102,7 +131,8 @@ public class TransactionService {
     private TransactionResponseDTO toResponseDTO(
             Transaction transaction) {
 
-        TransactionResponseDTO response = new TransactionResponseDTO();
+        TransactionResponseDTO response =
+                new TransactionResponseDTO();
 
         response.setId(transaction.getId());
         response.setAmount(transaction.getAmount());
@@ -125,12 +155,12 @@ public class TransactionService {
                 .getName();
 
         User user = userRepository.findByUsername(username)
-                .orElseThrow(() -> new UserNotFoundException("User not found"));
+                .orElseThrow(() ->
+                        new UserNotFoundException("User not found"));
 
         return transactionRepository.findByUserId(user.getId())
                 .stream()
                 .map(this::toResponseDTO)
                 .toList();
     }
-
 }
